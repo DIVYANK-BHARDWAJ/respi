@@ -226,37 +226,38 @@ const Lightfall: React.FC<LightfallProps> = ({
     const container = containerRef.current;
     if (!container) return;
 
-    const renderer = new Renderer({
-      dpr: dpr ?? (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1),
-      alpha: true,
-      antialias: true
-    });
-    rendererRef.current = renderer;
-    const gl = renderer.gl;
-    const canvas = gl.canvas as HTMLCanvasElement;
+    let renderer: Renderer | null = null;
+    let canvas: HTMLCanvasElement | null = null;
+    let ro: ResizeObserver | null = null;
+    let hasPointerMoveListener = false;
 
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.display = 'block';
-    container.appendChild(canvas);
-
-    const { arr, count, avg } = prepColors(colors);
+    const onPointerMove = (e: PointerEvent) => {
+      if (!canvas || !renderer) return;
+      const rect = canvas.getBoundingClientRect();
+      const scale = renderer.dpr || 1;
+      const x = (e.clientX - rect.left) * scale;
+      const y = (rect.height - (e.clientY - rect.top)) * scale;
+      mouseTargetRef.current = [x, y];
+      if (mouseDampening <= 0) {
+        uniforms.iMouse.value = [x, y];
+      }
+    };
 
     const uniforms = {
-      iResolution: { value: [gl.drawingBufferWidth, gl.drawingBufferHeight, 1] },
+      iResolution: { value: [0, 0, 1] },
       iMouse: { value: [0, 0] },
       iTime: { value: 0 },
-      uColor0: { value: arr[0] },
-      uColor1: { value: arr[1] },
-      uColor2: { value: arr[2] },
-      uColor3: { value: arr[3] },
-      uColor4: { value: arr[4] },
-      uColor5: { value: arr[5] },
-      uColor6: { value: arr[6] },
-      uColor7: { value: arr[7] },
-      uColorCount: { value: count },
-      uBgColor: { value: hexToRGB(backgroundColor) },
-      uMouseColor: { value: avg },
+      uColor0: { value: [0, 0, 0] },
+      uColor1: { value: [0, 0, 0] },
+      uColor2: { value: [0, 0, 0] },
+      uColor3: { value: [0, 0, 0] },
+      uColor4: { value: [0, 0, 0] },
+      uColor5: { value: [0, 0, 0] },
+      uColor6: { value: [0, 0, 0] },
+      uColor7: { value: [0, 0, 0] },
+      uColorCount: { value: 0 },
+      uBgColor: { value: [0, 0, 0] },
+      uMouseColor: { value: [0, 0, 0] },
       uSpeed: { value: speed },
       uStreakCount: { value: Math.max(1, Math.min(16, Math.round(streakCount))) },
       uStreakWidth: { value: streakWidth },
@@ -272,70 +273,98 @@ const Lightfall: React.FC<LightfallProps> = ({
       uMouseRadius: { value: mouseRadius }
     };
 
-    const program = new Program(gl, { vertex, fragment, uniforms });
-    programRef.current = program;
+    try {
+      renderer = new Renderer({
+        dpr: dpr ?? (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1),
+        alpha: true,
+        antialias: true
+      });
+      rendererRef.current = renderer;
+      const gl = renderer.gl;
+      if (!gl) {
+        throw new Error("WebGL context not available");
+      }
+      canvas = gl.canvas as HTMLCanvasElement;
 
-    const geometry = new Triangle(gl);
-    geometryRef.current = geometry;
-    const mesh = new Mesh(gl, { geometry, program });
-    meshRef.current = mesh;
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.display = 'block';
+      container.appendChild(canvas);
 
-    const resize = () => {
-      const rect = container.getBoundingClientRect();
-      renderer.setSize(rect.width, rect.height);
+      const { arr, count, avg } = prepColors(colors);
+      
       uniforms.iResolution.value = [gl.drawingBufferWidth, gl.drawingBufferHeight, 1];
-    };
+      uniforms.uColor0.value = arr[0];
+      uniforms.uColor1.value = arr[1];
+      uniforms.uColor2.value = arr[2];
+      uniforms.uColor3.value = arr[3];
+      uniforms.uColor4.value = arr[4];
+      uniforms.uColor5.value = arr[5];
+      uniforms.uColor6.value = arr[6];
+      uniforms.uColor7.value = arr[7];
+      uniforms.uColorCount.value = count;
+      uniforms.uBgColor.value = hexToRGB(backgroundColor);
+      uniforms.uMouseColor.value = avg;
 
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(container);
+      const program = new Program(gl, { vertex, fragment, uniforms });
+      programRef.current = program;
 
-    const onPointerMove = (e: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const scale = renderer.dpr || 1;
-      const x = (e.clientX - rect.left) * scale;
-      const y = (rect.height - (e.clientY - rect.top)) * scale;
-      mouseTargetRef.current = [x, y];
-      if (mouseDampening <= 0) {
-        uniforms.iMouse.value = [x, y];
+      const geometry = new Triangle(gl);
+      geometryRef.current = geometry;
+      const mesh = new Mesh(gl, { geometry, program });
+      meshRef.current = mesh;
+
+      const resize = () => {
+        if (!container || !renderer || !gl) return;
+        const rect = container.getBoundingClientRect();
+        renderer.setSize(rect.width, rect.height);
+        uniforms.iResolution.value = [gl.drawingBufferWidth, gl.drawingBufferHeight, 1];
+      };
+
+      resize();
+      ro = new ResizeObserver(resize);
+      ro.observe(container);
+
+      if (mouseInteraction) {
+        canvas.addEventListener('pointermove', onPointerMove);
+        hasPointerMoveListener = true;
       }
-    };
-    if (mouseInteraction) {
-      canvas.addEventListener('pointermove', onPointerMove);
-    }
 
-    const loop = (t: number) => {
-      rafRef.current = requestAnimationFrame(loop);
-      uniforms.iTime.value = t * 0.001;
-      if (mouseDampening > 0) {
-        if (!lastTimeRef.current) lastTimeRef.current = t;
-        const dt = (t - lastTimeRef.current) / 1000;
-        lastTimeRef.current = t;
-        const tau = Math.max(1e-4, mouseDampening);
-        let factor = 1 - Math.exp(-dt / tau);
-        if (factor > 1) factor = 1;
-        const target = mouseTargetRef.current;
-        const cur = uniforms.iMouse.value as number[];
-        cur[0] += (target[0] - cur[0]) * factor;
-        cur[1] += (target[1] - cur[1]) * factor;
-      } else {
-        lastTimeRef.current = t;
-      }
-      if (!paused && programRef.current && meshRef.current) {
-        try {
-          renderer.render({ scene: meshRef.current });
-        } catch (e) {
-          console.error(e);
+      const loop = (t: number) => {
+        rafRef.current = requestAnimationFrame(loop);
+        uniforms.iTime.value = t * 0.001;
+        if (mouseDampening > 0) {
+          if (!lastTimeRef.current) lastTimeRef.current = t;
+          const dt = (t - lastTimeRef.current) / 1000;
+          lastTimeRef.current = t;
+          const tau = Math.max(1e-4, mouseDampening);
+          let factor = 1 - Math.exp(-dt / tau);
+          if (factor > 1) factor = 1;
+          const target = mouseTargetRef.current;
+          const cur = uniforms.iMouse.value as number[];
+          cur[0] += (target[0] - cur[0]) * factor;
+          cur[1] += (target[1] - cur[1]) * factor;
+        } else {
+          lastTimeRef.current = t;
         }
-      }
-    };
-    rafRef.current = requestAnimationFrame(loop);
+        if (!paused && programRef.current && meshRef.current && renderer) {
+          try {
+            renderer.render({ scene: meshRef.current });
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      };
+      rafRef.current = requestAnimationFrame(loop);
+    } catch (e) {
+      console.warn("WebGL/Lightfall particles initialization failed:", e);
+    }
 
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      if (mouseInteraction) canvas.removeEventListener('pointermove', onPointerMove);
-      ro.disconnect();
-      if (canvas.parentElement === container) {
+      if (hasPointerMoveListener && canvas) canvas.removeEventListener('pointermove', onPointerMove);
+      if (ro) ro.disconnect();
+      if (canvas && canvas.parentElement === container) {
         container.removeChild(canvas);
       }
       const callIfFn = (obj: unknown, key: string) => {
